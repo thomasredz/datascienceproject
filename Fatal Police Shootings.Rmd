@@ -1,0 +1,478 @@
+---
+title: "Omicidi ad opera della polizia negli Stati Uniti"
+author: "Thomas Rosso"
+date: "23/06/2020"
+output: html_document
+---
+
+```{r echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduzione
+
+Successivamente alla pandemia causata dal COVID-19, un' ulteriore fatto di cronaca ha sconvolto l'equilibrio mondiale: l' omicidio di George Floyd per asfissia causato da un agente americano a Minneapolis, Minnesota.
+Tale fatto, ha causato innumerevoli rivolte negli Stati Uniti, con manifestazioni, inizialmente pacifiche ma che successivamente sono sfociate in veri e propri saccheggi, distruzione e vandalismo.
+Navigando nei vari social, guardando i vari telegiornali o semplicemente studiando la storia recente, vi sono innumerevoli riferimenti al fatto che la comunità afroamericana sia spesso vittima di attacchi da parte della polizia, i quali usando la propria posizione di superiorità commettono omicidi a sfondo razziale.
+Grazie ad i numerosi dati che il web mette a disposizione, l'obiettivo di questo progetto è analizzare i dati registrati sugli omicidi compiuti dalla polizia e confrontarli con la popolazione americana.
+
+Per questo progetto verranno impiegati 2 Dataset, il primo corrispondente agli spari fatali dai poliziotti dall'anno 2015 al 2020; il secondo sul censimento americano avvenuto nel 2015.
+
+In questo progetto si cercherà di rispondere alle seguenti domande:
+
+* Quali sono i generi più colpiti?
+* C'è una discriminazione verso le persone di colore?
+* Come si distribuiscono gli omicidi negli anni?
+* Quali sono le città e gli stati più colpiti?
+* C'è una correlazione tra le persone in fuga/presenza di armi e l' età?
+* C'è una correlazione tra la povertà percentuale di una città e gli omicidi ad opera della polizia?
+
+
+## Importazione e pulizia dei Dataset
+
+```{r message=FALSE}
+#Caricamento librerie
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(modelr)
+library(tidyr)
+library(gridExtra)
+library(scales)
+library(reshape2)
+
+#Caricamento Dataset
+fpsd = read.csv("fpsd.csv", na.strings = "", stringsAsFactors = TRUE)
+us_census_2015 = read.csv("acs2015_county.csv")
+
+#Pulizia dataset
+fpsd = na.omit(fpsd)
+us_census_2015 = us_census_2015 %>%
+  rename("H"="Hispanic","W"="White","B"="Black","N"="Native","A"="Asian","O"="Pacific")
+us_states = unique(us_census_2015$State)
+us_county = unique(us_census_2015$County)
+us_races = unique(fpsd$race)
+
+us_census_2015 = us_census_2015[us_census_2015$State != "Puerto Rico",]
+
+#Aggiustiamo la data
+fpsd = fpsd %>%
+  mutate(date=factor(date))
+fpsd = fpsd %>%
+  mutate(date = as.Date(date,format="%Y-%m-%d"))
+
+```
+
+Successivamente all' importazione dei Data set ed una breve pulizia degli stessi, possiamo procedere con la nostra analisi.
+
+## Analisi preliminare
+
+In questa prima parte del progetto, provvederemo ad analizzare quella che è una visione "dall' alto" del database.
+Innanzitutto proviamo a visualizzare qual è il genere (maschile o femminile) più colpito:
+
+```{r}
+ggplot(data = fpsd) +
+  geom_bar(mapping = aes(x = gender ,fill=gender))
+```
+
+Come si può facilmente osservare, il genere maschile è quello più colptio.
+Successivamente, concentriamo la nostra attenzione sull' età delle vittime:
+
+```{r}
+#Grafico distribuzione vittime per eta
+ggplot(data=fpsd) +
+    geom_bar(mapping = aes(x = age))
+```
+
+In questo primo grafico, osserviamo la distribuzione dell' età delle vittime, come si osserva facilmente, il maggior numero di vittime ha un' età compresa tra i 20 ed i 30 anni. Nel grafico sottostante, invece, si è preferito visulizzare le vittime tramite dei punti nel piano; in modo da poter osservare meglio la loro distribuzione. E' stato evidenziato in modo significativo la vittima con età più bassa rispetto all' intero dataset: <em>Jeremy Mardis</em>. Risalente al caso di cronaca del 2015, questo omicidio ha riguardato un bambino di solamente 6 anni per mano delle forze dell' ordine.
+
+```{r}
+#Omicidi per eta
+fpsd %>%
+  group_by(age) %>%
+  summarise(n=n()) %>%
+    ggplot(mapping=aes(x=age,y=n)) +
+      geom_point(mapping=aes(size=n,color=n),alpha=0.5,show.legend = FALSE) +
+      geom_text(aes(label=ifelse(age<10,as.character("Jeremy\n Mardis"),'')),hjust=0.5,vjust=-0.5)
+      
+  
+
+mean(fpsd$age)
+median(fpsd$age)
+min(fpsd$age)
+max(fpsd$age)
+
+    
+```
+
+Come ultima analisi preliminare, vorrei concentrarmi sui gruppi etnici più colpiti, utilizzando sempre un diagramma a barre:
+
+```{r}
+ggplot(data = fpsd) +
+  geom_bar(mapping = aes(x = race,fill=race)) +
+  scale_fill_discrete(name = "Race", labels = c("Asian", "Black", "Hispanic", "Native", "Other", "White"))
+```
+
+Per concludere questa prima parte, facciamo il punto sui dati ottenuti in questo inizio; da una prima occhiata pare evidente quanto ci siano delle chiare indicazioni sulle vittime più colpite, in particolare sulla presenza in maggior numero di maschi bianchi con un eta compresa tra i 20 e 30 anni.
+Queste indicazioni tuttavia non devono trarci in inganno in quanto mancano i dati relativi alla distribuzione delle varie etnie all' interno degli stati uniti.
+Nel prossimo punto provvederemo a risolvere questo problema e ad ottenere risultati più completi.
+
+## Distribuzione delle vittime all' interno degli Stati Uniti
+
+Come sancito nel punto precedente, in questa parte verrà approfondita la distribuzione delle varie etnie all' interno degli stati uniti; per farlo verrà utilizzato il dataset relativo al censimento americano effettuato nel 2015.
+
+Come primo passo aggiustiamo il dataset relativo al censimento, rimuovendo i campi non necessari:
+
+```{r}
+#Rimuovo i campi che non verrano utilizzati
+us_census_2015 = us_census_2015 %>%
+  select(State:Citizen,Poverty,ChildPoverty)
+```
+
+Con un dataset pulito ed ordinato, proviamo a visulizzare alcuni dati riguardo alla popolazione statunitense:
+
+```{r}
+#Visulizziamo le citta con più popolazione
+plot1=us_census_2015 %>%
+  arrange(-TotalPop) %>%
+  select(State, County, TotalPop) %>%
+  head(10) %>%
+  ggplot(aes(x=reorder(County,TotalPop), y=TotalPop)) +
+    geom_bar(stat="Identity",show.legend = FALSE) + 
+    ggtitle("The 10 most populous cities") +
+    xlab("County") +
+    coord_flip()  +
+    scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),
+              labels = trans_format("log10", math_format(10^.x)))
+
+
+#Visulizziamo le citta piu ricche (tasso di povertà piu basso)
+richest = us_census_2015 %>%
+  arrange(Poverty) %>%
+  select(State, County, Poverty) %>%
+  head(5)
+
+poor = us_census_2015 %>%
+  arrange(-Poverty) %>%
+  select(State, County, Poverty) %>%
+  head(5)
+
+top_and_last = rbind(richest,poor) %>%
+  arrange(Poverty)
+
+#Visulizziamo le citta piu povere (tasso di povertà piu alto)
+  plot2=ggplot(data=top_and_last,aes(x=reorder(County,Poverty), y=Poverty,fill=Poverty<20)) +
+    geom_bar(stat="Identity",show.legend = FALSE) +
+    scale_y_continuous(limits=c(0, 100),labels = function(x) paste0(x, "%")) +
+    ggtitle("Most richest and poorest cities") +
+    xlab("County") +
+    coord_flip()
+  
+grid.arrange(plot1,plot2)
+```
+
+Dal dataset relativo al censimento siamo risuciti ad estrapolare alcune due caratteristiche importanti:
+
+* Le 10 città più popolate degli stati uniti, in cui domina Los Angeles (California) con più di 10 milioni di abitanti
+* Le 5 città più ricche e più povere degli stati uniti, di cui si aggiudica il primato Borden con un tasso di povertò poco sopra l'1% e l' ultimo posto lo prende Oglala Lakota con una percentuale oltre il 50%.
+
+Un' osservazioni importante, tuttavia, è da fare anche qua, in quanto questi dati non tengono conto della dimensione totale dello stato/citta; comunque sia riescono a darci una bella vista dall' "alto" degli Stati Uniti d' America.
+
+Procediamo ora a rispondere a quella che probabilmente è la domanda più importante dell' intera analisi: esiste una qualche specie di discriminazione razziale?
+
+```{r}
+#Calcoliamo la distribuzione totale delle etnie negli stati uniti
+  
+#Popolazione totale neglu stati uniti
+total_pop = sum(us_census_2015$TotalPop)
+#Distribuzione etnica negli stati uniti
+race_distribution = us_census_2015 %>%
+  mutate(H=(H/100)*TotalPop,
+         W=(W/100)*TotalPop,
+         B=(B/100)*TotalPop,
+         N=(N/100)*TotalPop,
+         A=(A/100)*TotalPop,
+         O=(O/100)*TotalPop) %>%
+  select(State,County,TotalPop,H:O)
+
+#Calcoliamo la distribuzione totale delle etnie della popolazione
+totalH = sum(race_distribution$H)
+totalW = sum(race_distribution$W)
+totalB = sum(race_distribution$B)
+totalN = sum(race_distribution$N)
+totalA = sum(race_distribution$A)
+totalO = sum(race_distribution$O)
+
+#Calcoliamo le percentuali
+percentH = totalH/total_pop
+percentW = totalW/total_pop
+percentB = totalB/total_pop
+percentN = totalN/total_pop
+percentA = totalA/total_pop
+percentO = totalO/total_pop
+
+#Inseriamo i risultati in un dataframe
+race_distribution_percent = data.frame(
+  race = us_races,
+  percentage = c(percentA,percentW,percentH,percentB,percentO,percentN)
+)
+race_distribution_percent
+#Controprova per i risultati ottenuti dalle percentuali
+ggplot(data=race_distribution_percent, aes(x=race,y=percentage, fill=race)) +
+  geom_bar(stat = "identity") +
+  scale_fill_discrete(name = "Race", labels = c("Asian", "Black", "Hispanic", "Native", "Other", "White")) +
+  scale_y_continuous(labels = percent_format())
+
+```
+
+Finalmente, dopo quest' elaborazione di dati possiamo visulizzare i dati relativi alla comparazione tra gli omicidi ad opera della polizia e la distribuzione delle etnie all' interno della popolazione.
+Per farlo è sufficiente comparare le due pecentuali ed osservarne i risultati.
+```{r}
+#Analizziamo la distribuzione percentuale delle vittime (divise per etnie)
+fpsd_distrib = fpsd %>%
+  group_by(race) %>%
+  summarise(n=n())
+total_victim = sum(fpsd_distrib$n)
+fpsd_distrib = fpsd_distrib %>%
+  mutate(percentage_of_kill = n/total_victim) %>%
+  select(race,percentage_of_kill)
+
+#Uniamo i due valori all' interno di un unico dataset
+total_data = inner_join(race_distribution_percent,fpsd_distrib,by="race")
+df_long <- melt(total_data, id.var = "race")
+
+
+ggplot(df_long, aes(x = race, y = value, fill = variable)) + 
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual( values = c("#00B4B8", "#F65D57"),name="Percentage",labels=c("Population","Kill")) +
+  scale_y_continuous(labels = percent)
+  
+```
+
+Dai dati estrapolati, risulta evidente come ci sia una chiara descriminazione.
+Questa si può osservare in 2 casi distinti: il primo nella popolazione afroamericana, mentre il secondo nei nativi americani.
+Risulta quindi che le proteste trovino un forte fondamento nell' analisi dei dati.
+
+## Distribuzione degli omicidi nel corso degli anni
+
+Si è giunti finalmente ad una risposta alla domanda più importante.
+Il nuovo obiettivo è ora quello di approfondire ulteriormente il dataset per osservare come gli omicidi si distribuiscono negli anni e osservare magari una qualche forma di aumento o diminuzione.
+Una premessa importante da fare è che, dato che il 2020 non si è ancora concluso, l' ultima colonna relativa agli anni non è da prendere in considerazione, prendendo in esame le variazioni annue.
+
+```{r}
+#Estrazione dei dati relativi agli omicidi nei giorni
+daily = fpsd %>%
+  select(race,date) %>%
+  group_by(date,race) %>%
+  summarise (n=n())
+
+daily <- daily %>% 
+  mutate(year = year(date)) %>%
+  mutate(month = month(date))
+
+daily2 = fpsd %>%
+  mutate(year=year(date)) %>%
+  group_by(year) %>%
+  summarise(n=n())
+  
+#Visualizzazione dei risultai
+plot_time = ggplot(daily,mapping=aes(year,n,fill=race)) + 
+  geom_bar(stat = "identity") +
+  scale_fill_discrete(name = "Race", labels = c("Asian", "Black", "Hispanic", "Native", "Other", "White"))
+  
+
+plot4 = ggplot(daily2,mapping=aes(year,n)) + 
+  geom_line()
+
+grid.arrange(plot_time,plot4)
+
+```
+
+Un' osservazione immediata dal grafico è il leggero calo delle vittime dal 2015 ad oggi, con un impercettibile aumento nel 2018. 
+
+## Città e stati più colpiti
+
+Dopo un' analisi temporale, per estendere il concetto di conoscenza, la cosa più immediata è stilare un grafico che rappresenti le città e gli stati più colpiti, in modo da poterle eventualmente identificare come "più pericolose".
+
+```{r,fig.width=12 }
+#Stati piu pericolosi
+most_dangerous_states = fpsd %>%
+  group_by(state) %>%
+  summarise(n=n())
+
+ggplot(data=most_dangerous_states,mapping = aes(state,n,fill=n>100)) +
+  geom_bar(stat="Identity",position=position_dodge(width=20),show.legend = FALSE) +
+  scale_fill_manual( values = c("#00B4B8", "#F65D57"))
+```
+
+Come si puo osservare dalla figura, alcune città spiccano sulle altre, in particolare sono state evidenziate quelle con un numero totale di omicidi superiori a 100 dal 2015 al 2020.
+In particolare:
+
+```{r}
+most_dangerous_cities = most_dangerous_states %>%
+  filter(n>100)
+
+most_dangerous_cities = fpsd %>%
+  group_by(state,city) %>%
+  summarise(n=n()) %>%
+  arrange(-n) %>%
+  head(10)
+
+ggplot(data=most_dangerous_cities,aes(x=reorder(city,n), y=n)) +
+    geom_bar(stat="Identity",show.legend = FALSE) +
+    #scale_y_continuous(limits=c(0, 100),labels = function(x) paste0(x, "%")) +
+    ggtitle("Top 10 cities with police homicide") +
+    xlab("City") +
+    coord_flip()
+
+  
+```
+
+Stilando una classifica delle 10 città più pericolose, spicca Los Angeles(CA), in cui gli omici da parte dei dipartimenti di polizia super quota 60.
+
+## Individui in fuga
+
+All' interno del dataset, una feature curiosa, è quella riguardante la reazione dell' individuo successivamente all' arresto; in particolare se si è verificata una fuga (e anche come è stata effettuata) o se l' individuo non ha tentato di sfuggire agli agenti.
+Oltre a tutto ciò, sarà possibile visionare una lista delle armi più comuni utilizzate dalle vittime.
+
+```{r}
+#Estraiamo i valori della colonna flee e armed
+flee = unique(fpsd$flee)
+armed = unique(fpsd$armed)
+
+#Fuga degli individui
+flee_categories = fpsd %>%
+  group_by(flee) %>%
+  summarise(n=n())
+
+#Individui armati
+armed_categories = fpsd %>%
+  group_by(armed) %>%
+  summarise(n=n()) %>%
+  arrange(-n)
+
+#Rappresentiamo i risultati graficamente
+#DA SPOSTARE SU
+plot_flee = ggplot(data=flee_categories, mapping=aes(flee,n))+
+  geom_bar(stat = "identity")
+
+plot_weapon = armed_categories %>%
+  arrange(-n) %>%
+  head(10) %>%
+  ggplot(mapping=aes(reorder(armed,n),n))+
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  xlab("Weapon")
+
+plot_somi = fpsd %>%
+  group_by(signs_of_mental_illness) %>%
+  summarise(n=n()) %>%
+  ggplot(mapping=aes(signs_of_mental_illness,n, fill=signs_of_mental_illness)) +
+  geom_bar(stat = "Identity",show.legend = FALSE)
+
+grid.arrange(plot_flee,plot_somi,plot_weapon,nrow=2)
+
+
+
+```
+
+Ora cerchiamo una correlazione tra gli individui in fuga e l'età.
+Come è logico aspettarsi, una persona giovane magari tenterà in modo maggiore la fuga rispetto ad una più "anziana", date le caratteristiche fisiche più agili.
+Per verificare la nostra ipotesi useremo un test per le ipotesi Chi-Quadrato, che permette di ottenere un' eventuale correlazione tra due variabili categoriali.
+
+```{r}
+#Persone che scappano ed eta
+
+flee_people = fpsd %>%
+  filter(flee=="Not fleeing") %>%
+  group_by(age) %>%
+  summarise(n=n()) %>%
+  rename(nFlee = n)
+
+not_flee = fpsd %>%
+  filter(flee!="Not fleeing") %>%
+  group_by(age) %>%
+  summarise(n=n()) %>%
+  rename(nNotFlee = n)
+
+#Unione dei dataset
+complete_flee = full_join(flee_people,not_flee,by="age")
+complete_flee[is.na(complete_flee)] = 0
+df_long4 = melt(complete_flee, id.var = "age")
+
+#Stampiamo il grafico
+ggplot(df_long4, mapping = aes(age,value,fill=variable)) +
+  geom_bar(stat="Identity")
+
+#Operiamo il test
+chisq.test(complete_flee)
+```
+Già nel grafico si possono osservare le nostre ipotesi, ma questo trova ancora più riscontro nel test di Chi Quadrato.
+Dato il valore del P-Value, possiamo scartare l' ipotesi nulla e affermare che esiste una correlazione tra età ed individui in fuga.
+
+Un ulteriore correlazione interessante può essere quella tra la presenza di armi ed età. 
+Molto spesso nei media si ascoltano notizie ruguardanti strazianti stragi all' interno delle scuole da parte degli individui più giovani.
+Con questa ricerca di correlazione si vuole osservare se è presente un collegamento tra il possedimento di un' arma e l'aumentare dell' età.
+
+```{r }
+#Correlazione tra individui armati ed età
+armed_people = fpsd %>%
+  filter(armed!="unarmed") %>%
+  group_by(age) %>%
+  summarise(n=n()) %>%
+  rename(nArmed=n)
+
+unarmed_people = fpsd %>%
+  filter(armed=="unarmed") %>%
+  group_by(age) %>%
+  summarise(n=n()) %>%
+  rename(nUnarmed=n)
+
+complete_armed = full_join(armed_people,unarmed_people, by="age")
+complete_armed[is.na(complete_armed)] = 0
+df_long3 <- melt(complete_armed, id.var = "age")
+
+ggplot(df_long3, mapping = aes(age,value,fill=variable)) +
+  geom_bar(stat="Identity")
+
+#Proviamo ad osservare una correlazione
+chisq.test(complete_armed)
+```
+
+Anche in questo caso, è presente un p-value molto basso, di conseguenza possiamo osservare una relazione forte sia tra l' età e gli individui in fuga, sia tra l'eta degli individui e la presenza di armi di qualsiasi genere.
+
+## Rapporto tra omicidi e povertà
+
+In questa ultima parte, si è deciso di tornare ai dati presenti nel dataset del censimento, in particolare quello riguardante la povertà.
+L'obiettivo ultimo è la ricerca di una correlazione tra i casi di omicidio e la povertà di uno stato/città.
+
+```{r}
+fpsd_poverty = us_census_2015 %>%
+  mutate(Poverty = (Poverty/100)*TotalPop) %>%
+  select(County,TotalPop,Poverty) %>%
+  group_by(County) %>%
+  summarise(TotalPop=sum(TotalPop),Poverty=sum(Poverty)) %>%
+  rename(city=County)
+
+
+crime_and_poverty = inner_join(fpsd,fpsd_poverty,by="city") %>%
+  select(state,city,TotalPop,Poverty) %>%
+  group_by(city) %>%
+  summarise(Totalcrime=n(),TotalPop = unique(TotalPop), Poverty=unique(Poverty)) %>%
+  mutate(PovertyPercentage = Poverty/TotalPop)
+
+#Rappresentazione dei dati
+ggplot(data=crime_and_poverty,mapping=aes(x=PovertyPercentage,y=Totalcrime)) +
+  geom_point() +
+  scale_x_continuous(labels = percent) +
+  geom_smooth(method = "loess")
+  
+#Test di correlazione
+chisq.test(crime_and_poverty$PovertyPercentage,crime_and_poverty$Totalcrime)
+```
+
+In conclusione, analizzando già il grafico si capisce che non c'è una particolare correlazione tra le variabili.
+Effettuando il test, troviamo un p-value molto alto (quasi prossimo ad 1) che non ci permette di scartare l' ipotesi nulla; permettendoci di affermare con certezza che non c'è correlazione tra la povertà percentuale di uno stato e i crimini ad opera della polizia.
+
+
