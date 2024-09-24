@@ -1,4 +1,4 @@
-# datascienceproject
+# Analysis of the Fatal Police Shootings in the US (2015-2020)
 Progetto di Data Science
 
 Repository relativa al progetto di Data Science relativo all' esame del 23/06/2020
